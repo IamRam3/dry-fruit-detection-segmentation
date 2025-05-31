@@ -15,7 +15,7 @@
 
 ### Env
 
-Create a virtual env for dependencies config :
+Create a virtual env for dependencies configuration :
 
     python -m venv venv
 
