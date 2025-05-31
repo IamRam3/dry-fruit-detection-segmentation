@@ -18,11 +18,18 @@
 Create a virtual env for dependencies config :
 
     python -m venv venv
+
+Activate env.
+
+#### Linux
+    source venv/bin/activate
+
+#### windows
+###### If using Cmd shell -
+    \Scripts\activate.bat
+###### If using PowerShell -
+    \Scripts\Activate.ps1
     
-
-Note:
-
-Activate env based on your os.
 
 ## Task -
 
