@@ -4,8 +4,8 @@ from pycocotools.coco import COCO
 from PIL import Image
 from torchvision import transforms as T
 
-class CocoDataset(torch.utils.data.Dataset, segmentation=False):
-    def __init__(self, root, annFile, transforms=None):
+class CocoDataset(torch.utils.data.Dataset):
+    def __init__(self, root, annFile, transforms=None, segmentation=False):
         self.root = root
         self.coco = COCO(annFile)
         self.ids = list(sorted(self.coco.imgs.keys()))
