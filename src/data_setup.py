@@ -89,7 +89,7 @@ class CocoDataset(torch.utils.data.Dataset):
         return len(self.ids)
     
 
-class dataset_dir:
+class coco_dataset_dir:
   def __init__(self,path):
     self.path = path
     self.train_dir = self.path + "/train"

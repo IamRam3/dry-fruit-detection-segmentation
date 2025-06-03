@@ -491,3 +491,30 @@ def save_segmented_video(video_path, frame_output_dir, threshold=0.5, mask_thres
 
     cap.release()
     print(f"[✓] Saved {frame_idx} segmented frames to: {frame_output_dir}")
+
+
+class MaskRCNNWrapper(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, x):
+        outputs = self.model(x)
+        boxes = outputs[0]["boxes"]
+        labels = outputs[0]["labels"]
+        scores = outputs[0]["scores"]
+        masks = outputs[0]["masks"]
+        return boxes, labels, scores, masks
+    
+
+class FasterRCNNWrapper(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, x):
+        outputs = self.model(x)
+        boxes = outputs[0]["boxes"]
+        labels = outputs[0]["labels"]
+        scores = outputs[0]["scores"]
+        return boxes, labels, scores
