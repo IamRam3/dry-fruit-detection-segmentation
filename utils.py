@@ -110,7 +110,7 @@ class FocalLoss(nn.Module):
             return focal_loss
         
 
-def custom_fastrcnn_loss(class_logits, box_regression, labels, regression_targets, focal_criterion):
+def custom_fastrcnn_loss(class_logits, box_regression, labels, regression_targets, focal_criterion = FocalLoss(alpha=1.0, gamma=2.0)):
     # Flatten inputs
     labels = torch.cat(labels, dim=0)
     class_logits = class_logits.view(-1, class_logits.shape[-1])
