@@ -62,10 +62,10 @@ def convert_to_coco_format(predictions, image_ids, segmentation=False):
                 })
     return coco_results
 
-def get_detection_model(num_classes, segmentation=False, custom_focal_loss=False):
+def get_detection_model(num_classes, mobilenet=False, custom_focal_loss=False):
 
-    if segmentation:
-        model = maskrcnn_resnet50_fpn(pretrained=True)
+    if mobilenet:
+        model = torchvision.models.detection.fasterrcnn_mobilenet_v3_large_fpn(pretrained=True)
     else:
     # load an instance segmentation model pre-trained pre-trained on COCO
         model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
@@ -78,16 +78,31 @@ def get_detection_model(num_classes, segmentation=False, custom_focal_loss=False
         # Replace the default loss function with a custom focal loss
         model.roi_heads.fastrcnn_loss = custom_fastrcnn_loss
         #model.roi_heads.focal_criterion = FocalLoss(alpha=0.25, gamma=2.0, reduction="mean")
+    
+    return model
 
-    if segmentation:
+def get_segmentation_model(num_classes, custom_focal_loss=False):
+
+    model = maskrcnn_resnet50_fpn(pretrained=True)
+    # get number of input features for the classifier
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    # replace the pre-trained head with a new one
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+
+    if custom_focal_loss:
+        # Replace the default loss function with a custom focal loss
+        model.roi_heads.fastrcnn_loss = custom_fastrcnn_loss
+        #model.roi_heads.focal_criterion = FocalLoss(alpha=0.25, gamma=2.0, reduction="mean")
+
         # If segmentation is required, replace the mask predictor
-        in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
-        model.roi_heads.mask_predictor = torchvision.models.detection.mask_rcnn.MaskRCNNPredictor(
+    in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
+    model.roi_heads.mask_predictor = torchvision.models.detection.mask_rcnn.MaskRCNNPredictor(
             in_features_mask, 256, num_classes
         )
     
 
     return model
+
 
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2.0, reduction="mean"):
