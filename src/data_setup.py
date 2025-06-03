@@ -100,18 +100,21 @@ class dataset_dir:
     self.val_annFile = self.val_dir + self.annFile
     self.test_annFile = self.test_dir + self.annFile
   
-  def create_custom_datasets(self, get_transform):
+  def create_custom_datasets(self, get_transform, segmentation=False):
     train_dataset = CocoDataset(
+        segmentation=segmentation,
         root=self.train_dir,
         annFile=self.train_annFile,
         transforms=get_transform()
         )
     val_dataset = CocoDataset( 
+        segmentation=segmentation,
         root=self.val_dir,
         annFile=self.val_annFile,
         transforms=get_transform()
     ) 
     test_dataset = CocoDataset( 
+        segmentation=segmentation,
         root=self.test_dir,
         annFile=self.test_annFile,
         transforms=get_transform()
