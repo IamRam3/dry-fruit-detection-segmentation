@@ -18,6 +18,7 @@ from pycocotools import mask as mask_utils
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 from torchvision.models.detection import maskrcnn_resnet50_fpn
 from natsort import natsorted
+import time
 
 def get_transform():
     custom_transforms = []
@@ -341,14 +342,25 @@ def save_predicted_image(img_path, output_path, model, device, id_to_name, thres
     transform = T.ToTensor()
     image_tensor = transform(image).to(device)
 
+
     model.to(device)
     model.eval()
+
+    # Start timing before inference
+    start_time = time.time()
+
     with torch.no_grad():
         outputs = model([image_tensor])[0]
 
     boxes = outputs["boxes"].cpu()
     scores = outputs["scores"].cpu()
     labels = outputs["labels"].cpu()
+
+    # End timing after inference
+    end_time = time.time()
+    inference_time = end_time - start_time
+    print(f"[✓] Inference time: {inference_time:.4f} seconds")
+
 
     # Convert PIL to OpenCV format (RGB to BGR)
     frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
@@ -461,8 +473,17 @@ def save_segmented_image(img_path, output_path, model, device, id_to_name, thres
 
     model.to(device)
     model.eval()
+
+    # Start timing before inference
+    start_time = time.time()
+
     with torch.no_grad():
         outputs = model([image_tensor])[0]
+
+    # End timing after inference
+    end_time = time.time()
+    inference_time = end_time - start_time
+    print(f"[✓] Inference time: {inference_time:.4f} seconds")
 
     boxes = outputs["boxes"].cpu()
     scores = outputs["scores"].cpu()
