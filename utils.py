@@ -168,7 +168,102 @@ def create_video_from_images(image_folder, output_path, fps=30):
     print(f"Video saved to {output_path}")
 
 
-def train(num_epochs, train_data_loader, model, val_data_loader, convert_to_coco_format, dataset
+def train_step(epoch, train_data_loader, model, device, optimizer):
+    model.train()
+    total_loss = 0.0
+
+    for images, targets in tqdm(train_data_loader, desc=f"Training Epoch {epoch+1}"):
+        images = list(image.to(device) for image in images)
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
+        loss_dict = model(images, targets)
+        losses = sum(loss for loss in loss_dict.values())
+
+        optimizer.zero_grad()
+        losses.backward()
+        optimizer.step()
+
+        total_loss += losses.item()
+
+    avg_loss = total_loss / len(train_data_loader)
+    print(f"[Epoch {epoch+1}] Training Loss: {avg_loss:.4f}")
+
+    return avg_loss
+
+
+def validate_step(model, val_data_loader, convert_to_coco_format, dataset, device, model_name, segmentation=False):
+    model.eval()
+    predictions = []
+    image_ids = []
+
+    with torch.no_grad():
+        for images, targets in tqdm(val_data_loader, desc="Validating"):
+            images = list(image.to(device) for image in images)
+            outputs = model(images)
+            predictions.extend(outputs)
+            image_ids.extend([int(t["image_id"]) for t in targets])
+
+    coco_predictions = convert_to_coco_format(predictions, image_ids, segmentation)
+
+    if len(coco_predictions) == 0:
+        print("[Warning] No valid predictions generated. Skipping COCO evaluation.")
+        return None  # skip this epoch's evaluation
+
+    prediction_file = f"coco_eval/predictions_{model_name}.json"
+    if os.path.exists(prediction_file):
+        print(f"Removing existing prediction file: {prediction_file}")
+        os.remove(prediction_file)
+    os.makedirs("coco_eval", exist_ok=True)
+    with open(prediction_file, "w") as f:
+        json.dump(coco_predictions, f)
+
+    coco_gt = COCO(dataset.val_annFile)
+    coco_dt = coco_gt.loadRes(prediction_file)
+    iouType = 'segm' if segmentation else 'bbox'
+    coco_eval = COCOeval(coco_gt, coco_dt, iouType=iouType)
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    print(f"Validation Metrics:")
+    coco_eval.summarize()
+
+    return coco_eval.stats[0]  # AP@[IoU=0.50:0.95]
+
+
+def train_pipe(num_epochs, train_data_loader, model, val_data_loader, convert_to_coco_format,
+          dataset, device, optimizer, model_name, patience=5,
+          best_map=0.0, segmentation=False):
+
+    epochs_no_improve = 0
+
+    model_save_path = f"best_{model_name}_model.pth"
+    save_path = os.path.join("saved_models", model_save_path)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+    for epoch in range(num_epochs):
+        _ = train_step(epoch, train_data_loader, model, device, optimizer)
+
+        current_map = validate_step(model, val_data_loader, convert_to_coco_format, dataset, device, segmentation)
+
+        if current_map is None:
+            continue
+
+        # Early stopping check
+        if current_map > best_map:
+            print(f"New best mAP: {current_map:.4f} (previous best: {best_map:.4f}) — saving model.")
+            best_map = current_map
+            torch.save(model.state_dict(), save_path)
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+            print(f"No improvement in mAP for {epochs_no_improve} epoch(s).")
+
+        if epochs_no_improve >= patience:
+            print(f"Early stopping triggered after {epoch+1} epochs. Best mAP: {best_map:.4f}")
+            break
+
+
+
+'''def train(num_epochs, train_data_loader, model, val_data_loader, convert_to_coco_format, dataset
 , device, optimizer, save_path="best_model.pth", patience=5, best_map=0.0, segmentation=False):
   for epoch in range(num_epochs):
       model.train()
@@ -239,7 +334,7 @@ def train(num_epochs, train_data_loader, model, val_data_loader, convert_to_coco
       if epochs_no_improve >= patience:
           print(f"Early stopping triggered after {epoch+1} epochs. Best mAP: {best_map:.4f}")
           break
-
+'''
 
 def save_predicted_image(img_path, output_path, model, device, id_to_name, threshold=0.5):
     image = Image.open(img_path).convert("RGB")
@@ -283,11 +378,13 @@ def save_predicted_video(video_path, output_path, model, device, id_to_name, thr
     transform = T.ToTensor()
 
     while cap.isOpened():
-        ret, frame = cap.read()
+        ret, frame = cap.read() #frame in bgr format
         if not ret:
             break
 
-        image_tensor = transform(frame).to(device)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(frame_rgb) 
+        image_tensor = transform(pil_image).to(device)
 
         model.to(device)
         model.eval()
@@ -309,9 +406,11 @@ def save_predicted_video(video_path, output_path, model, device, id_to_name, thr
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         out.write(frame)
+        frame_idx += 1
 
     cap.release()
     out.release()
+    print(f"[✓] Saved {frame_idx} annotated frames to video: {output_path}")
 
 
 def closest_basic_color_name(requested_color, basic_colors):
@@ -421,7 +520,7 @@ def get_all_image_paths(folder_path):
             if f.lower().endswith(valid_exts)]
 
 
-def save_segmented_video(video_path, frame_output_dir, threshold=0.5, mask_threshold=0.5):
+def save_segmented_video(video_path, frame_output_dir, model, device, id_to_name, threshold=0.5, mask_threshold=0.5):
     if not os.path.exists(frame_output_dir):
         os.makedirs(frame_output_dir)
 
