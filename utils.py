@@ -100,7 +100,6 @@ def get_segmentation_model(num_classes, custom_focal_loss=False):
             in_features_mask, 256, num_classes
         )
     
-
     return model
 
 
@@ -203,6 +202,10 @@ def train(num_epochs, train_data_loader, model, val_data_loader, convert_to_coco
               image_ids.extend([int(t["image_id"]) for t in targets])
 
       coco_predictions = convert_to_coco_format(predictions, image_ids, segmentation)
+
+      if len(coco_predictions) == 0:
+            print("[Warning] No valid predictions generated. Skipping COCO evaluation.")
+            continue  # Or safely skip this epoch’s evaluation
 
       os.makedirs("coco_eval", exist_ok=True)
       prediction_file = "coco_eval/predictions.json"
