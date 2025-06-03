@@ -1,3 +1,4 @@
+import torchvision
 def get_transform():
     custom_transforms = []
     custom_transforms.append(torchvision.transforms.ToTensor())
