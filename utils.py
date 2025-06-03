@@ -11,6 +11,12 @@ from pycocotools.coco import COCO
 from tqdm import tqdm
 import json
 from pycocotools.cocoeval import COCOeval
+import torchvision.transforms as T
+from PIL import Image
+import numpy as np
+from pycocotools import mask as mask_utils
+from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
+from torchvision.models.detection import maskrcnn_resnet50_fpn
 
 def get_transform():
     custom_transforms = []
@@ -18,30 +24,60 @@ def get_transform():
     return torchvision.transforms.Compose(custom_transforms)
 
 # Helper to convert predictions to COCO format
-def convert_to_coco_format(predictions, image_ids):
+def convert_to_coco_format(predictions, image_ids, segmentation=False):
     coco_results = []
     for prediction, image_id in zip(predictions, image_ids):
         boxes = prediction["boxes"].cpu().numpy()
         scores = prediction["scores"].cpu().numpy()
         labels = prediction["labels"].cpu().numpy()
-        for box, score, label in zip(boxes, scores, labels):
-            x_min, y_min, x_max, y_max = box
-            coco_box = [x_min, y_min, x_max - x_min, y_max - y_min]  # COCO format: [x, y, width, height]
-            coco_results.append({
-                "image_id": image_id,
-                "category_id": int(label),
-                "bbox": [float(v) for v in coco_box],
-                "score": float(score)
-            })
+        if segmentation:
+            masks = prediction["masks"].cpu().numpy()  # shape: [N, 1, H, W]
+            for box, score, label, mask in zip(boxes, scores, labels, masks):
+                x_min, y_min, x_max, y_max = box
+                coco_box = [x_min, y_min, x_max - x_min, y_max - y_min]
+
+            # Threshold mask
+                mask = mask[0] > 0.5  # Convert from [1, H, W] to binary mask
+
+            # Encode mask in RLE
+                rle = mask_utils.encode(np.asfortranarray(mask.astype(np.uint8)))
+                rle["counts"] = rle["counts"].decode("utf-8")  # for JSON serializable
+
+                coco_results.append({
+                    "image_id": image_id,
+                    "category_id": int(label),
+                    "bbox": [float(v) for v in coco_box],
+                    "score": float(score),
+                    "segmentation": rle
+                })
+        else:
+            for box, score, label in zip(boxes, scores, labels):
+                x_min, y_min, x_max, y_max = box
+                coco_box = [x_min, y_min, x_max - x_min, y_max - y_min]  # COCO format: [x, y, width, height]
+                coco_results.append({
+                    "image_id": image_id,
+                    "category_id": int(label),
+                    "bbox": [float(v) for v in coco_box],
+                    "score": float(score)
+                })
     return coco_results
 
 def get_detection_model(num_classes, segmentation=False, custom_focal_loss=False):
+
+    if segmentation:
+        model = maskrcnn_resnet50_fpn(pretrained=True)
+    else:
     # load an instance segmentation model pre-trained pre-trained on COCO
-    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
+        model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
     # get number of input features for the classifier
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     # replace the pre-trained head with a new one
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+
+    if custom_focal_loss:
+        # Replace the default loss function with a custom focal loss
+        model.roi_heads.fastrcnn_loss = custom_fastrcnn_loss
+        #model.roi_heads.focal_criterion = FocalLoss(alpha=0.25, gamma=2.0, reduction="mean")
 
     if segmentation:
         # If segmentation is required, replace the mask predictor
@@ -50,10 +86,6 @@ def get_detection_model(num_classes, segmentation=False, custom_focal_loss=False
             in_features_mask, 256, num_classes
         )
     
-    if custom_focal_loss:
-        # Replace the default loss function with a custom focal loss
-        model.roi_heads.fastrcnn_loss = custom_fastrcnn_loss
-        #model.roi_heads.focal_criterion = FocalLoss(alpha=0.25, gamma=2.0, reduction="mean")
 
     return model
 
@@ -122,7 +154,7 @@ def create_video_from_images(image_folder, output_path, fps=30):
 
 
 def train(num_epochs, train_data_loader, model, val_data_loader, convert_to_coco_format, dataset
-, device, optimizer, save_path="best_model.pth", patience=5, best_map=0.0):
+, device, optimizer, save_path="best_model.pth", patience=5, best_map=0.0, segmentation=False):
   for epoch in range(num_epochs):
       model.train()
       total_loss = 0.0
@@ -155,7 +187,7 @@ def train(num_epochs, train_data_loader, model, val_data_loader, convert_to_coco
               predictions.extend(outputs)
               image_ids.extend([int(t["image_id"]) for t in targets])
 
-      coco_predictions = convert_to_coco_format(predictions, image_ids)
+      coco_predictions = convert_to_coco_format(predictions, image_ids, segmentation)
 
       os.makedirs("coco_eval", exist_ok=True)
       prediction_file = "coco_eval/predictions.json"
@@ -164,7 +196,11 @@ def train(num_epochs, train_data_loader, model, val_data_loader, convert_to_coco
 
       coco_gt = COCO(dataset.val_annFile)
       coco_dt = coco_gt.loadRes(prediction_file)
-      coco_eval = COCOeval(coco_gt, coco_dt, iouType='bbox')
+      if segmentation:
+          iouType = 'segm'
+      else:
+          iouType = 'bbox'
+      coco_eval = COCOeval(coco_gt, coco_dt, iouType=iouType)
       coco_eval.evaluate()
       coco_eval.accumulate()
       print(f"[Epoch {epoch+1}] Evaluation Metrics:")
@@ -184,3 +220,178 @@ def train(num_epochs, train_data_loader, model, val_data_loader, convert_to_coco
       if epochs_no_improve >= patience:
           print(f"Early stopping triggered after {epoch+1} epochs. Best mAP: {best_map:.4f}")
           break
+
+
+def save_predicted_image(img_path, output_path, model, device, id_to_name, threshold=0.5):
+    image = Image.open(img_path).convert("RGB")
+    image_tensor = transform(image).to(device)
+
+    model.eval()
+    with torch.no_grad():
+        outputs = model([image_tensor])[0]
+
+    boxes = outputs["boxes"].cpu()
+    scores = outputs["scores"].cpu()
+    labels = outputs["labels"].cpu()
+
+    # Convert PIL to OpenCV format (RGB to BGR)
+    frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+    for i in range(len(scores)):
+        if scores[i] >= threshold:
+            box = boxes[i].numpy().astype(int)
+            label = id_to_name.get(labels[i].item(), str(labels[i].item()))
+            score = scores[i].item()
+
+            cv2.rectangle(frame, tuple(box[:2]), tuple(box[2:]), (0, 255, 0), 2)
+            cv2.putText(frame, f"{label} {score:.2f}", (box[0], box[1] - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+    cv2.imwrite(output_path, frame)
+
+
+def save_predicted_video(video_path, output_path, model, device, id_to_name, threshold=0.5):
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+    transform = T.ToTensor()
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        image_tensor = transform(frame).to(device)
+
+        with torch.no_grad():
+            outputs = model([image_tensor])[0]
+
+        boxes = outputs["boxes"].cpu()
+        scores = outputs["scores"].cpu()
+        labels = outputs["labels"].cpu()
+
+        for i in range(len(scores)):
+            if scores[i] >= threshold:
+                box = boxes[i].numpy().astype(int)
+                label = id_to_name.get(labels[i].item(), str(labels[i].item()))
+                score = scores[i].item()
+
+                cv2.rectangle(frame, tuple(box[:2]), tuple(box[2:]), (0, 255, 0), 2)
+                cv2.putText(frame, f"{label} {score:.2f}", (box[0], box[1] - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+        out.write(frame)
+
+    cap.release()
+    out.release()
+
+
+def closest_basic_color_name(requested_color, basic_colors):
+    min_dist = float("inf")
+    closest_name = None
+    for name, rgb in basic_colors.items():
+        dist = sum((rc - cc) ** 2 for rc, cc in zip(requested_color, rgb))
+        if dist < min_dist:
+            min_dist = dist
+            closest_name = name
+    return closest_name
+
+def detect_shape(mask):
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return "unknown"
+
+    # Use the largest contour
+    c = max(contours, key=cv2.contourArea)
+    area = cv2.contourArea(c)
+    if area < 100:  # too small to be reliable
+        return "tiny"
+
+    perimeter = cv2.arcLength(c, True)
+    approx = cv2.approxPolyDP(c, 0.04 * perimeter, True)
+
+    # Shape classification
+    if len(approx) >= 6:
+        # Use circularity = 4π * Area / Perimeter²
+        circularity = 4 * np.pi * area / (perimeter ** 2 + 1e-5)
+        if circularity > 0.7:
+            return "round"
+        elif circularity > 0.4:
+            return "oval"
+        else:
+            return "irregular"
+    else:
+        return "irregular"
+    
+
+def save_segmented_image(img_path, output_path, model, device, id_to_name, threshold=0.5, mask_threshold=0.5):
+    image = Image.open(img_path).convert("RGB")
+    transform = T.ToTensor()
+
+    # Fixed overlay color (BGR)
+    FIXED_COLOR = np.array([0, 0, 255], dtype=np.uint8)  # white color
+    image_tensor = transform(image).to(device)
+
+    model.eval()
+    with torch.no_grad():
+        outputs = model([image_tensor])[0]
+
+    boxes = outputs["boxes"].cpu()
+    scores = outputs["scores"].cpu()
+    labels = outputs["labels"].cpu()
+    masks = outputs["masks"].cpu()  # [N, 1, H, W]
+
+    frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+    for i in range(len(scores)):
+        if scores[i] >= threshold:
+            box = boxes[i].numpy().astype(int)
+            label = id_to_name.get(labels[i].item(), str(labels[i].item()))
+            score = scores[i].item()
+
+            # Get and threshold mask
+            mask = masks[i, 0].numpy()
+            mask = (mask > mask_threshold).astype(np.uint8)
+
+            shape = detect_shape(mask)
+
+            # Extract masked region from original image to compute average color
+            masked_region = frame * mask[:, :, None]
+            if np.any(mask):
+                avg_color = masked_region[mask.astype(bool)].mean(axis=0).astype(np.uint8)
+            else:
+                avg_color = np.array([128, 128, 128], dtype=np.uint8)  # fallback
+
+            # Get color name from actual region color (convert to RGB)
+            avg_color_rgb = avg_color[::-1]
+            color_name = closest_basic_color_name(avg_color)
+
+            # Prepare fixed colored mask for overlay
+            colored_mask = np.zeros_like(frame)
+            for c in range(3):
+                colored_mask[:, :, c] = mask * FIXED_COLOR[c]
+
+            # Overlay fixed-color mask on frame
+            frame = cv2.addWeighted(frame, 0.7, colored_mask, 0.5, 0)
+
+            # Draw box and label (color of text = original avg color)
+            label_text = f"{label} {score:.2f} - {color_name.capitalize()}, {shape.capitalize()}"
+            cv2.rectangle(frame, tuple(box[:2]), tuple(box[2:]), (0, 255, 0), 2)
+            cv2.putText(frame, label_text, (box[0], box[1] - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (int(avg_color[0]), int(avg_color[1]), int(avg_color[2])), 2)
+
+    cv2.imwrite(output_path, frame)
+    print(f"[✓] Saved segmented image to: {output_path}")
+
+
+def get_all_image_paths(folder_path):
+    valid_exts = (".jpg", ".jpeg", ".png")
+    return [os.path.join(folder_path, f)
+            for f in os.listdir(folder_path)
+            if f.lower().endswith(valid_exts)]
