@@ -224,8 +224,10 @@ def train(num_epochs, train_data_loader, model, val_data_loader, convert_to_coco
 
 def save_predicted_image(img_path, output_path, model, device, id_to_name, threshold=0.5):
     image = Image.open(img_path).convert("RGB")
+    transform = T.ToTensor()
     image_tensor = transform(image).to(device)
 
+    model.to(device)
     model.eval()
     with torch.no_grad():
         outputs = model([image_tensor])[0]
@@ -268,6 +270,8 @@ def save_predicted_video(video_path, output_path, model, device, id_to_name, thr
 
         image_tensor = transform(frame).to(device)
 
+        model.to(device)
+        model.eval()
         with torch.no_grad():
             outputs = model([image_tensor])[0]
 
@@ -337,6 +341,7 @@ def save_segmented_image(img_path, output_path, model, device, id_to_name, thres
     FIXED_COLOR = np.array([0, 0, 255], dtype=np.uint8)  # white color
     image_tensor = transform(image).to(device)
 
+    model.to(device)
     model.eval()
     with torch.no_grad():
         outputs = model([image_tensor])[0]
