@@ -389,6 +389,7 @@ def save_predicted_video(video_path, output_path, model, device, id_to_name, thr
 
     transform = T.ToTensor()
 
+    frame_idx = 0
     while cap.isOpened():
         ret, frame = cap.read() #frame in bgr format
         if not ret:
@@ -462,8 +463,23 @@ def detect_shape(mask):
     else:
         return "irregular"
     
+basic_colors = {
+    'red': (255, 0, 0),
+    'green': (0, 128, 0),
+    'blue': (0, 0, 255),
+    'yellow': (255, 255, 0),
+    #'cyan': (0, 255, 255),
+    #'magenta': (255, 0, 255),
+    'black': (0, 0, 0),
+    #'white': (255, 255, 255),
+    'gray': (128, 128, 128),
+    'orange': (255, 165, 0),
+    #'brown': (165, 42, 42),
+    'purple': (128, 0, 128),
+}
+    
 
-def save_segmented_image(img_path, output_path, model, device, id_to_name, threshold=0.5, mask_threshold=0.5):
+def save_segmented_image(img_path, output_path, model, device, id_to_name, basic_colors, threshold=0.5, mask_threshold=0.5):
     image = Image.open(img_path).convert("RGB")
     transform = T.ToTensor()
 
@@ -541,27 +557,12 @@ def get_all_image_paths(folder_path):
             if f.lower().endswith(valid_exts)]
 
 
-basic_colors = {
-    'red': (255, 0, 0),
-    'green': (0, 128, 0),
-    'blue': (0, 0, 255),
-    'yellow': (255, 255, 0),
-    #'cyan': (0, 255, 255),
-    #'magenta': (255, 0, 255),
-    'black': (0, 0, 0),
-    #'white': (255, 255, 255),
-    'gray': (128, 128, 128),
-    'orange': (255, 165, 0),
-    #'brown': (165, 42, 42),
-    'purple': (128, 0, 128),
-}
 
 def save_segmented_video(video_path, frame_output_dir, model, device, id_to_name, basic_colors, threshold=0.5, mask_threshold=0.5):
     if not os.path.exists(frame_output_dir):
         os.makedirs(frame_output_dir)
 
     cap = cv2.VideoCapture(video_path)
-    transform = T.ToTensor()
     frame_idx = 0
 
     while cap.isOpened():
@@ -569,64 +570,31 @@ def save_segmented_video(video_path, frame_output_dir, model, device, id_to_name
         if not ret:
             break
 
-        # Convert BGR to RGB
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(frame_rgb)
-        image_tensor = transform(pil_image).to(device)
+        # Save temporary image frame
+        temp_frame_path = os.path.join(frame_output_dir, f"temp_frame_{frame_idx:05d}.jpg")
+        cv2.imwrite(temp_frame_path, frame_bgr)
 
-        model.eval()
-        with torch.no_grad():
-            outputs = model([image_tensor])[0]
+        # Output path for segmented frame
+        output_frame_path = os.path.join(frame_output_dir, f"frame_{frame_idx:05d}.jpg")
 
-        frame_display = frame_bgr.copy()  # Start with original BGR for output
+        # Use the existing image segmentation function
+        save_segmented_image(
+            img_path=temp_frame_path,
+            output_path=output_frame_path,
+            model=model,
+            device=device,
+            id_to_name=id_to_name,
+            basic_colors=basic_colors,
+            threshold=threshold,
+            mask_threshold=mask_threshold
+        )
 
-        boxes = outputs["boxes"].cpu()
-        scores = outputs["scores"].cpu()
-        labels = outputs["labels"].cpu()
-        masks = outputs["masks"].cpu()  # [N, 1, H, W]
-
-        for i in range(len(scores)):
-            if scores[i] >= threshold:
-                box = boxes[i].numpy().astype(int)
-                label = id_to_name.get(labels[i].item(), str(labels[i].item()))
-                score = scores[i].item()
-
-                # Threshold and apply mask
-                mask = masks[i, 0].numpy()
-                mask = (mask > mask_threshold).astype(np.uint8)
-
-                # Extract masked region and compute average color
-                masked_region = frame_display * mask[:, :, None]
-                if np.any(mask):
-                    color = masked_region[mask.astype(bool)].mean(axis=0).astype(np.uint8)
-                else:
-                    color = np.array([128, 128, 128], dtype=np.uint8)
-
-                # Get color name and shape
-                color_name = closest_basic_color_name(color, basic_colors)
-                shape = detect_shape(mask)
-
-                # Create overlay mask
-                colored_mask = np.zeros_like(frame_display)
-                for c in range(3):
-                    colored_mask[:, :, c] = mask * color[c]
-
-                frame_display = cv2.addWeighted(frame_display, 1.0, colored_mask, 0.5, 0)
-
-                # Draw box and label
-                label_text = f"{label} {score:.2f} - {color_name.capitalize()}, {shape.capitalize()}"
-                cv2.rectangle(frame_display, tuple(box[:2]), tuple(box[2:]), (0, 255, 0), 2)
-                cv2.putText(frame_display, label_text, (box[0], box[1] - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (int(color[0]), int(color[1]), int(color[2])), 2)
-
-        # Save processed frame
-        frame_name = f"frame_{frame_idx:05d}.jpg"
-        cv2.imwrite(os.path.join(frame_output_dir, frame_name), frame_display)
+        # Clean up temporary frame
+        os.remove(temp_frame_path)
         frame_idx += 1
 
     cap.release()
     print(f"[✓] Saved {frame_idx} segmented frames to: {frame_output_dir}")
-
 
 class MaskRCNNWrapper(nn.Module):
     def __init__(self, model):
