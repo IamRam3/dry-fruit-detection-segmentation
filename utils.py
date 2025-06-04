@@ -541,7 +541,22 @@ def get_all_image_paths(folder_path):
             if f.lower().endswith(valid_exts)]
 
 
-def save_segmented_video(video_path, frame_output_dir, model, device, id_to_name, threshold=0.5, mask_threshold=0.5):
+basic_colors = {
+    'red': (255, 0, 0),
+    'green': (0, 128, 0),
+    'blue': (0, 0, 255),
+    'yellow': (255, 255, 0),
+    #'cyan': (0, 255, 255),
+    #'magenta': (255, 0, 255),
+    'black': (0, 0, 0),
+    #'white': (255, 255, 255),
+    'gray': (128, 128, 128),
+    'orange': (255, 165, 0),
+    #'brown': (165, 42, 42),
+    'purple': (128, 0, 128),
+}
+
+def save_segmented_video(video_path, frame_output_dir, model, device, id_to_name, basic_colors, threshold=0.5, mask_threshold=0.5):
     if not os.path.exists(frame_output_dir):
         os.makedirs(frame_output_dir)
 
@@ -588,7 +603,7 @@ def save_segmented_video(video_path, frame_output_dir, model, device, id_to_name
                     color = np.array([128, 128, 128], dtype=np.uint8)
 
                 # Get color name and shape
-                color_name = closest_basic_color_name(color)
+                color_name = closest_basic_color_name(color, basic_colors)
                 shape = detect_shape(mask)
 
                 # Create overlay mask
